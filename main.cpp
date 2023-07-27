@@ -41,6 +41,45 @@ void on_mutated(uint32_t session_id, const std::vector<std::vector<uint8_t>>& bi
     bin_file.close();
 }
 
+namespace callbacks {
+    void on_export_init(void* data) {
+        auto export_info = (MUTATOR::ExportCallback*)data;
+
+        // in this example, each export in the binary is a pointer (and the binary is x86), so the size is always 4
+        // each pointer will be equal to 0x13371337 after initialization, and will be mapped recursively
+
+        std::vector<uint8_t> pointer_value = {};
+        pointer_value.resize(4);
+        *reinterpret_cast<uint32_t*>(pointer_value.data()) = 0x13371337;
+
+        export_info->set_size(pointer_value.size());
+        export_info->set_value(std::string(pointer_value.begin(), pointer_value.end()));
+        export_info->set_is_const(true);
+    }
+
+    void on_export_map(void* data) {
+        auto export_info = (MUTATOR::ExportCallback*)data;
+
+        // in this example, the value of each export will be increased by 0x10000000 when generating a unique mutation
+
+        std::vector<uint8_t> updated_value = {};
+        updated_value.resize(4);
+        memcpy(updated_value.data(), export_info->value().data(), updated_value.size());
+        *reinterpret_cast<uint32_t*>(updated_value.data()) += 0x10000000;
+
+        export_info->set_value(std::string(updated_value.begin(), updated_value.end()));
+    }
+
+    void on_expiration(void* data) {
+        printf("subscription is expiring in %llu minutes!!!\n", ((MUTATOR::ExpireCallback*)data)->time_left() / 60);
+
+        // it's advised to send a message to the social media or messenger once the callback is received
+        // thus, there would be enough time to renew the subscription
+        // first expiration callback arrives 24 hours before the subscription expires
+        // the last expiration callback arrives 3 minutes before the subscription expires
+    }
+}
+
 int main() {
     std::cout << "Example usage of Mutator SDK" << std::endl;
 
@@ -73,6 +112,11 @@ int main() {
     pzm::set_option<bool>(pzm::EOption::kBlockShuffle, true);
     pzm::set_option<uint16_t>(pzm::EOption::kMinMutationLength, 30);
     pzm::set_option<uint16_t>(pzm::EOption::kMaxMutationLength, 50);
+
+    // setup callbacks
+    pzm::set_callback(MUTATOR::Callback::CALLBACK_EXPORT_INIT, callbacks::on_export_init);
+    pzm::set_callback(MUTATOR::Callback::CALLBACK_EXPORT_MMAP, callbacks::on_export_map);
+    pzm::set_callback(MUTATOR::Callback::CALLBACK_SUBSCRIPTION_EXPIRE, callbacks::on_expiration);
 
     std::cout << "Initializing..." << std::endl;
 

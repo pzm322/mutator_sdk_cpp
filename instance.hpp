@@ -3,18 +3,18 @@
 
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 namespace pzm {
-    enum class EMsgType
-    {
+    enum class EMsgType {
         kAuth = 0,
         kInit = 1,
         kCreateInstance = 2,
         kMutate = 3,
+        kCallback = 4,
     };
 
-    enum class EOption
-    {
+    enum class EOption {
         kShuffle = 0,
         kBlockAsObject,
         kBlockShuffle,
@@ -38,6 +38,8 @@ namespace pzm {
     uint32_t last_status = 0;
 
     MUTATOR::MutatorSettings* settings;
+
+    std::unordered_map<MUTATOR::Callback, std::function<void(void*)>> callbacks = {};
 
     std::function<void(uint32_t session, std::optional<MUTATOR::MapperData> data)> on_session_created = {};
     std::function<void(uint32_t session, std::vector<std::vector<uint8_t>> binaries,
@@ -85,6 +87,54 @@ namespace pzm {
                     binaries.emplace_back(binary.begin(), binary.end());
 
                 on_mutated(response.session_id(), binaries, response.launchdata());
+                break;
+            }
+            case EMsgType::kCallback: {
+                MUTATOR::CallbackResponse callback_response;
+                callback_response.set_type(response.callback().type());
+
+                if (callbacks.contains(response.callback().type())) {
+                    void* data = nullptr;
+                    switch (response.callback().type()) {
+                        case MUTATOR::Callback::CALLBACK_EXPORT_INIT:
+                        case MUTATOR::Callback::CALLBACK_EXPORT_MMAP:
+                            data = (void*)response.mutable_callback()->mutable_export_();
+                            break;
+                        case MUTATOR::Callback::CALLBACK_SUBSCRIPTION_EXPIRE:
+                            data = (void*)response.mutable_callback()->mutable_expire();
+                            break;
+                        case MUTATOR::Callback::CALLBACK_VERSION_UPDATE:
+                            data = (void*)response.mutable_callback()->mutable_version();
+                            break;
+                        default:
+                            break;
+                    }
+
+                    if (data)
+                        callbacks[response.callback().type()](data);
+
+                    switch (response.callback().type()) {
+                        case MUTATOR::Callback::CALLBACK_EXPORT_INIT:
+                            *callback_response.mutable_export_() = *(MUTATOR::ExportCallback*)data;
+                            break;
+                        case MUTATOR::Callback::CALLBACK_EXPORT_MMAP:
+                            *callback_response.mutable_export_() = *(MUTATOR::ExportCallback*)data;
+                            callback_response.mutable_export_()
+                                ->set_unique_id(response.callback().export_().unique_id());
+                            break;
+                        case MUTATOR::Callback::CALLBACK_SUBSCRIPTION_EXPIRE:
+                            *callback_response.mutable_expire() = *(MUTATOR::ExpireCallback*)data;
+                            break;
+                        case MUTATOR::Callback::CALLBACK_VERSION_UPDATE:
+                            *callback_response.mutable_version() = *(MUTATOR::VersionUpdateCallback*)data;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                connection->send(std::to_string(static_cast<int>(EMsgType::kCallback))
+                    + callback_response.SerializeAsString());
                 break;
             }
             default: {
@@ -177,6 +227,11 @@ namespace pzm {
                 settings->set_vm_type(static_cast<MUTATOR::VM>(value));
                 break;
         }
+    }
+
+    void set_callback(MUTATOR::Callback type, const std::function<void(void*)>& fn) {
+        settings->add_callbacks(type);
+        callbacks.emplace(type, fn);
     }
 
     bool initialize() {
